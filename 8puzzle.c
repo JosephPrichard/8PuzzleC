@@ -9,8 +9,10 @@
 #include <math.h>
 
 #define SIZE 9
-#define ROW 3
-#define byte char
+#define ROWS 3
+#define tile char
+#define NEIGHBOR_CNT 4
+#define LONGEST_SOL 32
 
 // TYPE AND FUNCTION DEFINITIONS
 
@@ -18,7 +20,7 @@ typedef enum move {
     NONE, UP, DOWN, LEFT, RIGHT
 } move;
 
-typedef byte board[SIZE];
+typedef tile board[SIZE];
 
 typedef struct puzzle {
     struct puzzle* prev;
@@ -29,7 +31,7 @@ typedef struct puzzle {
 } puzzle;
 
 typedef struct priority_q {
-    puzzle** heap;
+    puzzle** min_heap;
     int size;
     int capacity;
 } priority_q;
@@ -67,6 +69,26 @@ void push_pq(priority_q*, puzzle*);
 
 puzzle* pop_pq(priority_q*);
 
+puzzle* new_puzzle(const board);
+
+int find_zero(const board);
+
+puzzle* move_puzzle(puzzle* puz, int row_offset, int col_offset);
+
+int heuristic(const board);
+
+void solve(const board, const board);
+
+void print_puzzle(puzzle*);
+
+void reconstruct_path(puzzle*);
+
+// GLOBALS
+
+static const int NEIGHBOR_OFFSETS[NEIGHBOR_CNT][2] = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
+static const int NEIGHBOR_MOVES[NEIGHBOR_CNT] = {RIGHT, DOWN, LEFT, UP};
+static const char* MOVE_STRINGS[] = {"None", "Up", "Down", "Left", "Right"};
+
 // DEBUG TOOLS
 
 void print_ht(hash_table* ht) {
@@ -80,7 +102,7 @@ void print_ht(hash_table* ht) {
 void print_pq(priority_q* pq) {
     printf("priority_q\n");
     for (int i = 0; i < pq->size; i++) {
-        printf("%d ", pq->heap[i]->f);
+        printf("%d ", pq->min_heap[i]->f);
     }
     printf("\n");
 }
@@ -88,9 +110,9 @@ void print_pq(priority_q* pq) {
 // HASH TABLE IMPLEMENTATION
 
 hash_table* new_ht(int capacity, float lf_threshold) {
-    hash_table* ht = (hash_table*) malloc(sizeof(hash_table));
+    hash_table* ht = malloc(sizeof(hash_table));
     ht->capacity = next_prime(capacity);
-    ht->table = (int*) calloc(ht->capacity, sizeof(int));
+    ht->table = calloc(ht->capacity, sizeof(int));
     ht->lf_threshold = lf_threshold;
     ht->size = 0;
     if (ht == NULL || ht->table == NULL) {
@@ -140,13 +162,13 @@ void rehash(hash_table* ht) {
     int* old_table = ht->table;
     // allocate a new hash table and rehash all old elements into it
     ht->capacity = next_prime(ht->capacity * 2);
-    ht->table = (int*) calloc(ht->capacity, sizeof(int));
+    ht->table = calloc(ht->capacity, sizeof(int));
     // check for allocation errors
     if (ht->table == NULL) {
         printf("hash_table reallocation failed");
         exit(1);
     }
-    // add all keys from the old to the new heap
+    // add all keys from the old to the new min_heap
     for (int i = 0; i < old_capacity; i++) {
         if (old_table[i] != 0) {
             ht_probe(ht, old_table[i]);
@@ -193,11 +215,11 @@ int ht_has(hash_table* ht, int key) {
 // PQ IMPLEMENTATION
 
 priority_q* new_pq(int capacity) {
-    priority_q* pq = (priority_q*) malloc(sizeof(priority_q));
+    priority_q* pq = malloc(sizeof(priority_q));
     pq->capacity = capacity;
-    pq->heap = (puzzle**) malloc(sizeof(puzzle) * pq->capacity);
+    pq->min_heap = malloc(sizeof(puzzle) * pq->capacity);
     pq->size = 0;
-    if (pq == NULL || pq->heap == NULL) {
+    if (pq == NULL || pq->min_heap == NULL) {
         printf("Failed to allocate priority_q");
         exit(1);
     }
@@ -205,12 +227,12 @@ priority_q* new_pq(int capacity) {
 }
 
 void ensure_capacity(priority_q* pq) {
-    // ensure heap's capacity is large enough
+    // ensure min_heap's capacity is large enough
     if (pq->size >= pq->capacity) {
         pq->capacity = pq->capacity * 2;
-        pq->heap = (puzzle**) realloc(pq->heap, sizeof(puzzle) * pq->capacity);
+        pq->min_heap = realloc(pq->min_heap, sizeof(puzzle) * pq->capacity);
         // check for allocation errors
-        if (pq->heap == NULL) {
+        if (pq->min_heap == NULL) {
             printf("priority_q reallocation failed");
             exit(1);
         }
@@ -219,18 +241,18 @@ void ensure_capacity(priority_q* pq) {
 
 void push_pq(priority_q* pq, puzzle* puz) {
     ensure_capacity(pq);
-    // add element to end of heap
-    pq->heap[pq->size] = puz;
-    // sift the heap up
+    // add element to end of min_heap
+    pq->min_heap[pq->size] = puz;
+    // sift the min_heap up
     int pos = pq->size;
     int parent = (pos - 1) / 2;
     // sift up until parent score is larger
     while (parent >= 0) {
-        if (pq->heap[pos]->f > pq->heap[parent]->f) {
+        if (pq->min_heap[pos]->f < pq->min_heap[parent]->f) {
             // swap parent with child
-            puzzle* temp = pq->heap[pos];
-            pq->heap[pos] = pq->heap[parent];
-            pq->heap[parent] = temp;
+            puzzle* temp = pq->min_heap[pos];
+            pq->min_heap[pos] = pq->min_heap[parent];
+            pq->min_heap[parent] = temp;
             // climb up the tree
             pos = parent;
             parent = (pos - 1) / 2;
@@ -242,14 +264,14 @@ void push_pq(priority_q* pq, puzzle* puz) {
 }
 
 puzzle* pop_pq(priority_q* pq) {
-    // check for empty heap
+    // check for empty min_heap
     if (pq->size == 0) {
-        printf("Can't pop an empty heap.");
+        printf("Can't pop an empty min_heap.");
         exit(1);
     }
     // extract top element and move bottom to top
-    puzzle* top = pq->heap[0];
-    pq->heap[0] = pq->heap[pq->size - 1];
+    puzzle* top = pq->min_heap[0];
+    pq->min_heap[0] = pq->min_heap[pq->size - 1];
     // sift top element down
     int pos = 0;
     for (;;) {
@@ -258,12 +280,12 @@ puzzle* pop_pq(priority_q* pq) {
             break;
         }
         int right = 2 * pos + 2;
-        int child = right >= pq->size || pq->heap[left]->f > pq->heap[right]->f ? left : right;
-        if (pq->heap[pos]->f < pq->heap[child]->f) {
+        int child = right >= pq->size || pq->min_heap[left]->f < pq->min_heap[right]->f ? left : right;
+        if (pq->min_heap[pos]->f > pq->min_heap[child]->f) {
             // swap parent with child
-            puzzle* temp = pq->heap[pos];
-            pq->heap[pos] = pq->heap[child];
-            pq->heap[child] = temp;
+            puzzle* temp = pq->min_heap[pos];
+            pq->min_heap[pos] = pq->min_heap[child];
+            pq->min_heap[child] = temp;
             // climb down tree
             pos = child;
         } else {
@@ -277,9 +299,9 @@ puzzle* pop_pq(priority_q* pq) {
 // PUZZLE SOLVER IMPLEMENTATION
 
 puzzle* new_puzzle(const board brd) {
-    puzzle* puz = (puzzle*) malloc(sizeof(puzzle));
+    puzzle* puz = malloc(sizeof(puzzle));
     if (puz == NULL) {
-        printf("Failed to allocate he");
+        printf("Failed to allocate puzzle");
         exit(1);
     }
     memcpy(puz->board, brd, sizeof(board));
@@ -290,9 +312,94 @@ puzzle* new_puzzle(const board brd) {
     return puz;
 }
 
+int find_zero(const board brd) {
+    for (int i = 0; i < SIZE; i++) {
+        if (brd[i] == 0) {
+            return i;
+        }
+    }
+    printf("board doesn't contain 0");
+    exit(1);
+}
+
+puzzle* move_puzzle(puzzle* puz, int row_offset, int col_offset) {
+    // find the location of the zero on the board
+    int zero_loc = find_zero(puz->board);
+    int zero_row = zero_loc / ROWS;
+    int zero_col = zero_loc % ROWS;
+    // find the location of the tile to be swapped
+    int swap_row = zero_row + row_offset;
+    int swap_col = zero_col + col_offset;
+    int swap_loc = swap_col + ROWS * swap_row;
+    // check if puzzle is out of bounds
+    if (swap_row < 0 || swap_row >= ROWS || swap_col < 0 || swap_col >= ROWS) {
+        return NULL;
+    }
+    // initialize the new puzzle state
+    puzzle* new_puz = new_puzzle(puz->board);
+    new_puz->prev = puz;
+    new_puz->g = puz->g + 1;
+    new_puz->f = new_puz->g + heuristic(new_puz->board);
+    // swap location of 0 with new location
+    tile temp = new_puz->board[zero_loc];
+    new_puz->board[zero_loc] = new_puz->board[swap_loc];
+    new_puz->board[swap_loc] = temp;
+    return new_puz;
+}
+int heuristic(const board brd) {
+    int h = 0;
+    for (int i = 0; i < SIZE; i++) {
+        // manhattan distance
+        int row1 = i / ROWS;
+        int col1 = i % ROWS;
+        int row2 = brd[i] / SIZE;
+        int col2 = brd[i] % SIZE;
+        h += abs(row2 - row1) + abs(col2 - col1);
+    }
+    return h;
+}
+
+void solve(const board initial_brd, const board goal_brd) {
+    int goal_hash = hash(goal_brd);
+
+    puzzle* root = new_puzzle(initial_brd);
+    priority_q* open_set = new_pq(1000);
+    hash_table* closed_set = new_ht(1000, 0.7f);
+
+    push_pq(open_set, root);
+
+    // iterate until we find a solution
+    while(open_set->size >= 0) {
+        // pop off the state with the best heuristic
+        puzzle* current_puz = pop_pq(open_set);
+        int current_hash = hash(current_puz->board);
+        ht_insert(closed_set, hash(current_puz->board));
+
+        // check if we've reached the goal state
+        if (current_hash == goal_hash) {
+            // print out solution
+            reconstruct_path(current_puz);
+            return;
+        }
+
+        // add neighbor states to the priority queue
+        for (int i = 0; i < NEIGHBOR_CNT; i++) {
+            puzzle* neighbor_puz = move_puzzle(current_puz, NEIGHBOR_OFFSETS[i][0], NEIGHBOR_OFFSETS[i][1]);
+            if (neighbor_puz != NULL && !ht_has(closed_set, hash(neighbor_puz->board))) {
+                neighbor_puz->move = NEIGHBOR_MOVES[i];
+                push_pq(open_set, neighbor_puz);
+            }
+        }
+    }
+}
+
 void print_puzzle(puzzle* puz) {
     for (int i = 0; i < SIZE; i++) {
-        printf("%d, ", puz->board[i]);
+        if (puz->board[i] != 0) {
+            printf("%d ", puz->board[i]);
+        } else {
+            printf("  ");
+        }
         if ((i + 1) % 3 == 0) {
             printf("\n");
         }
@@ -300,54 +407,27 @@ void print_puzzle(puzzle* puz) {
     printf("\n");
 }
 
-int manhattan_distance(int row1, int row2, int col1, int col2) {
-    return abs(row2 - row1) + abs(col2 - col1);
-}
-
-int heuristic(const board brd) {
-    int h = 0;
-    for (int i = 0; i < SIZE; i++) {
-        h += manhattan_distance(i % ROW, i / ROW, brd[i] / SIZE, brd[i] % SIZE);
+void reconstruct_path(puzzle* leaf_puz) {
+    int count;
+    puzzle* path[LONGEST_SOL];
+    for(count = 0; leaf_puz != NULL; count++) {
+        path[count] = leaf_puz;
+        leaf_puz = leaf_puz->prev;
     }
-    return h;
-}
-
-puzzle* next_puzzle(puzzle* puz) {
-    puzzle* next_puz = new_puzzle(puz->board);
-    next_puz->prev = puz;
-    next_puz->g = puz->g + 1;
-    next_puz->f = next_puz->g + heuristic(next_puz->board);
-    return next_puz;
-}
-
-puzzle* move_up(puzzle* puz) {
-    puzzle* next_puz = next_puzzle(puz);
-    next_puz->move = UP;
-    return next_puz;
-}
-
-void solve(const board brd) {
-    puzzle* root = new_puzzle(brd);
-    priority_q* pq = new_pq(1000);
-    hash_table* ht = new_ht(1000, 0.7f);
-
-    push_pq(pq, root);
-    print_puzzle(root);
-
+    printf("Solution: \n\n");
+    for (int i = count - 1; i >= 0; i--) {
+        printf("%s\n", MOVE_STRINGS[path[i]->move]);
+        print_puzzle(path[i]);
+    }
 }
 
 int main() {
     srand(time(0));
 
-    char brd[SIZE] = {6, 4, 7, 8, 5, 0, 3, 2, 1};
-    solve(brd);
+    char initial_brd[SIZE] = {0, 1, 3, 4, 2, 5, 7, 8, 6};
+    char goal_brd[SIZE] = {1, 2, 3, 4, 5, 6, 7, 8, 0};
 
-    hash_table* ht = new_ht(10, 0.7f);
-    for (int i = 0; i < 20; i++) {
-        ht_insert(ht, hash(brd));
-    }
-    print_ht(ht);
-    printf("%d\n", ht_has(ht, hash(brd)));
+    solve(initial_brd, goal_brd);
 
     return 0;
 }
