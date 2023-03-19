@@ -432,9 +432,8 @@ void parse_board(board brd, FILE* input_file) {
             count++;
         }
     }
-    double root = sqrt(count);
-    if ((int) root != root) {
-        printf("An input board's size must be a power of 2.");
+    if (count < 9) {
+        printf("An input board's size must be 9.");
         exit(1);
     }
 }
