@@ -59,6 +59,10 @@ void probe_ht(hash_table* ht, int key);
 
 int ht_has_key(hash_table* ht, int key);
 
+int is_prime(int);
+
+int next_prime(int);
+
 priority_q* new_pq();
 
 void ensure_capacity(priority_q*);
@@ -95,7 +99,7 @@ static const char* MOVE_STRINGS[] = {"Start", "Up", "Down", "Left", "Right"};
 
 hash_table* new_ht(float lf_threshold) {
     hash_table* ht = malloc(sizeof(hash_table));
-    ht->capacity = 10;
+    ht->capacity = next_prime(10);
     ht->table = calloc(ht->capacity, sizeof(int));
     ht->lf_threshold = lf_threshold;
     ht->size = 0;
@@ -124,7 +128,7 @@ void rehash(hash_table* ht) {
     int old_capacity = ht->capacity;
     int* old_table = ht->table;
     // allocate a new hash table and rehash all old elements into it
-    ht->capacity = ht->capacity * 2;
+    ht->capacity = next_prime(ht->capacity * 2);
     ht->table = calloc(ht->capacity, sizeof(int));
     // check for allocation errors
     if (ht->table == NULL) {
@@ -171,6 +175,27 @@ int ht_has_key(hash_table* ht, int key) {
         } else if (ht->table[p] == key) {
             // hash values match so board is in table
             return 1;
+        }
+    }
+}
+
+int is_prime(int n) {
+    // iterate from 2 to sqrt(n)
+    for (int i = 2; i <= sqrt(n); i++) {
+        // if n is divisible by any number between 2 and n/2, it is not prime
+        if (n % i == 0) {
+            return 0;
+        }
+    }
+    if (n <= 1)
+        return 0;
+    return 1;
+}
+
+int next_prime(int n) {
+    for (int i = n;; i++) {
+        if (is_prime(i)) {
+            return i;
         }
     }
 }
