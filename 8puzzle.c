@@ -8,6 +8,7 @@
 #include <time.h>
 #include <math.h>
 #include <ctype.h>
+#include <stdint.h>
 
 #define SIZE 9
 #define ROWS 3
@@ -15,6 +16,7 @@
 #define NEIGHBOR_CNT 4
 #define LONGEST_SOL 32
 #define CHILD_CNT 4
+#define LF_THRESHOLD 0.7f
 
 // TYPE AND FUNCTION DEFINITIONS
 
@@ -42,12 +44,21 @@ typedef struct hash_table {
     int* table;
     int size;
     int capacity;
-    float lf_threshold;
 } hash_table;
 
-hash_table* new_ht(float);
+typedef struct list {
+    puzzle** arr;
+    int size;
+    int capacity;
+} list;
 
-int hash(const board);
+list* new_list();
+
+void push_list(list* ls, puzzle*);
+
+hash_table* new_ht();
+
+int hash_board(const board);
 
 void rehash(hash_table*);
 
@@ -85,8 +96,6 @@ void print_board(const board);
 
 void reconstruct_path(puzzle*);
 
-void free_tree(puzzle**, int);
-
 void parse_board(board brd, FILE* input_file);
 
 // GLOBALS
@@ -95,13 +104,40 @@ static const int NEIGHBOR_OFFSETS[NEIGHBOR_CNT][2] = {{0, 1}, {1, 0}, {0, -1}, {
 static const int NEIGHBOR_MOVES[NEIGHBOR_CNT] = {RIGHT, DOWN, LEFT, UP};
 static const char* MOVE_STRINGS[] = {"Start", "Up", "Down", "Left", "Right"};
 
+// LIST IMPLEMENTATION
+
+list* new_list() {
+    list* ls = malloc(sizeof(list));
+    ls->size = 0;
+    ls->capacity = 10;
+    ls->arr = malloc(sizeof(puzzle*) * ls->capacity);
+    if (ls == NULL && ls->arr == NULL) {
+        printf("Failed to allocate list");
+        exit(1);
+    }
+    return ls;
+}
+
+void push_list(list* ls, puzzle* puz) {
+    // add to block of all puzzles
+    if (ls->size >= ls->capacity) {
+        ls->capacity = ls->capacity * 2;
+        ls->arr = realloc(ls->arr, sizeof(puzzle*) * ls->capacity);
+        if (ls->arr == NULL) {
+            printf("Failed to reallocate list");
+            exit(1);
+        }
+    }
+    ls->arr[ls->size] = puz;
+    ls->size++;
+}
+
 // HASH TABLE IMPLEMENTATION
 
-hash_table* new_ht(float lf_threshold) {
+hash_table* new_ht() {
     hash_table* ht = malloc(sizeof(hash_table));
     ht->capacity = next_prime(10);
     ht->table = calloc(ht->capacity, sizeof(int));
-    ht->lf_threshold = lf_threshold;
     ht->size = 0;
     if (ht == NULL || ht->table == NULL) {
         printf("Failed to allocate hash_table");
@@ -110,7 +146,7 @@ hash_table* new_ht(float lf_threshold) {
     return ht;
 }
 
-int hash(const board board) {
+int hash_board(const board board) {
     // hash function takes each symbol in the puzzle from start to end as a digit
     int hash = 0;
     for (int i = 0; i < SIZE; i++) {
@@ -147,7 +183,7 @@ void rehash(hash_table* ht) {
 
 void insert_into_ht(hash_table* ht, int key) {
     // rehash when load factor exceeds threshold
-    if ((float) ht->size / (float) ht->capacity > ht->lf_threshold) {
+    if ((float) ht->size / (float) ht->capacity > LF_THRESHOLD) {
         rehash(ht);
     }
     probe_ht(ht, key);
@@ -355,20 +391,22 @@ int heuristic(const board brd) {
 }
 
 void solve(const board initial_brd, const board goal_brd) {
-    int goal_hash = hash(goal_brd);
+    int goal_hash = hash_board(goal_brd);
 
+    list* puzzles = new_list();
     puzzle* root = new_puzzle(initial_brd);
     priority_q* open_set = new_pq();
-    hash_table* closed_set = new_ht(0.7f);
+    hash_table* closed_set = new_ht();
 
+    push_list(puzzles, root);
     push_pq(open_set, root);
 
     // iterate until we find a solution
     while(open_set->size >= 0) {
         // pop off the state with the best heuristic
         puzzle* current_puz = pop_pq(open_set);
-        int current_hash = hash(current_puz->board);
-        insert_into_ht(closed_set, hash(current_puz->board));
+        int current_hash = hash_board(current_puz->board);
+        insert_into_ht(closed_set, current_hash);
 
         // check if we've reached the goal state
         if (current_hash == goal_hash) {
@@ -384,37 +422,35 @@ void solve(const board initial_brd, const board goal_brd) {
             int col_offset = NEIGHBOR_OFFSETS[i][1];
             // write a moved board state into the neighbor board, then check for error states and if neighbor bord is closed
             if (move_board(current_puz->board, neighbor_board, row_offset, col_offset) == 0
-                && !ht_has_key(closed_set, hash(neighbor_board))) {
+                && !ht_has_key(closed_set, hash_board(neighbor_board))) {
+
                 // create a new neighbor with the new board and calculated states
                 puzzle* neighbor_puz = new_puzzle(neighbor_board);
                 neighbor_puz->parent = current_puz;
                 neighbor_puz->g = current_puz->g + 1;
                 neighbor_puz->f = neighbor_puz->g + heuristic(neighbor_board);
                 neighbor_puz->move = NEIGHBOR_MOVES[i];
+
+                // add to list of all puzzles
+                push_list(puzzles, neighbor_puz);
+
                 // add neighbor board to pq
                 push_pq(open_set, neighbor_puz);
             }
         }
     }
 
-    free_tree(open_set->min_heap, open_set->size);
+    // free all puzzles stored in list
+    for (int i = 0; i < puzzles->size; i++) {
+        free(puzzles->arr[i]);
+    }
 
+    free(puzzles->arr);
+    free(puzzles);
     free(closed_set->table);
     free(closed_set);
     free(open_set->min_heap);
     free(open_set);
-}
-
-void free_tree(puzzle** leaf_puz, int count) {
-    // TODO: FIX FREE TREE
-    for (int i = 0; i < count; i++) {
-        puzzle* curr = leaf_puz[i];
-        while (curr != NULL) {
-            puzzle* parent = curr->parent;
-//            free(curr);
-            curr = parent;
-        }
-    }
 }
 
 void print_board(const board brd) {
